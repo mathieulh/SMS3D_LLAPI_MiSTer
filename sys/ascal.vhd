@@ -55,6 +55,7 @@
 --         0 : 16 bits/pixel, RGB : RRRRRGGGGGGBBBBB
 --         1 : 24 bits/pixel, RGB
 --         2 : 32 bits/pixels RGB0
+
 --  3:2  : Header size : Offset to start of picture (= N_BURST). 12 bits
 --  5:4  : Attributes. TBD
 --         b0 ; Interlaced
@@ -63,7 +64,6 @@
 --         b3 : Vertical downscaled
 --         b4 : Triple buffered
 --       b7-5 : Frame counter
---       b9-8 : 3D mode 0=OFF 1=Enabled
 --  7:6  : Image width. Pixels. 12 bits
 --  9:8  : Image height. Pixels. 12 bits
 -- 11:10 : Line length. Bytes.
@@ -91,19 +91,14 @@ USE ieee.numeric_std.ALL;
 
 -- MODE[4] : TBD
 
--- DDD[1:0]
--- 00 : 3D Mode disabled.
--- 01 : Interlaced  = side by side "3D". Non-inter = Single image
--- 11 : Interlaced  = side by side "3D". Non-inter = Duplicated picture
-
 -- MASK      : Enable / Disable selected interpoler
 --             0:Nearest 1:Bilinear 2:SharpBilinear 3:Bicubic 4:Polyphase
--- RAMBASE   : RAM base address for scaler framebuffer (storing input image)
+-- RAMBASE   : RAM base address for framebuffer
 -- RAMSIZE   : RAM allocated for one framebuffer (needs x3 if triple-buffering)
 --             Must be a power of two
 -- INTER     : True=Autodetect interlaced video False=Force progressive scan
 -- HEADER    : True=Add image properties header
--- PALETTE   : Enable palette for framebuffer 8bpp mode
+-- PALETTE   : Enable palette for framebuffer -8bpp mode
 -- DOWNSCALE : True=Support downscaling False=Downscaling disabled
 -- BYTESWAP  : Little/Big endian byte swap
 -- FRAC      : Fractional bits, subpixel resolution
@@ -115,7 +110,7 @@ USE ieee.numeric_std.ALL;
 -- N_AW      : Avalon address bus width
 -- N_BURST   : Burst size in bytes. Power of two.
 
-ENTITY ascal3d IS
+ENTITY ascal IS
   GENERIC (
     MASK      : unsigned(7 DOWNTO 0) :=x"FF";
     RAMBASE   : unsigned(31 DOWNTO 0);
@@ -157,7 +152,7 @@ ENTITY ascal3d IS
     o_clk : IN  std_logic; -- Output clock
     
     -- Border colour R G B
-    o_border    : IN unsigned(23 DOWNTO 0) := x"000000";
+    o_border   : IN unsigned(23 DOWNTO 0) := x"000000";
     
     ------------------------------------
     -- Framebuffer mode
@@ -170,7 +165,7 @@ ENTITY ascal3d IS
     -- Framebuffer palette in 8bpp mode
     pal_clk : IN std_logic :='0';
     pal_dw  : IN  unsigned(23 DOWNTO 0) :=x"000000"; -- R G B
-    pal_dr  : OUT unsigned(23 DOWNTO 0);
+    pal_dr  : OUT unsigned(23 DOWNTO 0) :=x"000000";
     pal_a   : IN  unsigned(7 DOWNTO 0) :=x"00"; -- Colour index
     pal_wr  : IN  std_logic :='0';
     
@@ -180,11 +175,11 @@ ENTITY ascal3d IS
     
     ------------------------------------
     -- Input video parameters
-    iauto : IN std_logic :='1'; -- 1=Autodetect image size 0=Choose window
-    himin : IN natural RANGE 0 TO 4095 :=0; -- MIN < MAX, MIN >=0, MAX < DISP
-    himax : IN natural RANGE 0 TO 4095 :=0;
-    vimin : IN natural RANGE 0 TO 4095 :=0;
-    vimax : IN natural RANGE 0 TO 4095 :=0;
+    iauto : IN std_logic; -- 1=Autodetect image size 0=Choose window
+    himin : IN natural RANGE 0 TO 4095; -- MIN < MAX, MIN >=0, MAX < DISP
+    himax : IN natural RANGE 0 TO 4095;
+    vimin : IN natural RANGE 0 TO 4095;
+    vimax : IN natural RANGE 0 TO 4095;
     
     -- Output video parameters
     run    : IN std_logic :='1'; -- 1=Enable output image. 0=No image
@@ -192,10 +187,8 @@ ENTITY ascal3d IS
     mode   : IN unsigned(4 DOWNTO 0);
     -- SYNC  |_________________________/"""""""""\_______|
     -- DE    |""""""""""""""""""\________________________|
-    -- RGB   |    <#IMAGE#>      ^HDISP                  |
+    -- RGB   |    <#IMAGE#>     ^HDISP                   |
     --            ^HMIN   ^HMAX        ^HSSTART  ^HSEND  ^HTOTAL
-    ddd     : IN unsigned(1 DOWNTO 0); -- 3D mode
-    
     htotal  : IN natural RANGE 0 TO 4095;
     hsstart : IN natural RANGE 0 TO 4095;
     hsend   : IN natural RANGE 0 TO 4095;
@@ -243,11 +236,11 @@ ENTITY ascal3d IS
 BEGIN
   ASSERT N_DW=64 OR N_DW=128 REPORT "DW" SEVERITY failure;
   
-END ENTITY ascal3d;
+END ENTITY ascal;
 
 --##############################################################################
 
-ARCHITECTURE rtl OF ascal3d IS
+ARCHITECTURE rtl OF ascal IS
   
   CONSTANT MASK_NEAREST        : natural :=0;
   CONSTANT MASK_BILINEAR       : natural :=1;
@@ -308,7 +301,6 @@ ARCHITECTURE rtl OF ascal3d IS
   SIGNAL i_iauto : std_logic;
   SIGNAL i_mode : unsigned(4 DOWNTO 0);
   SIGNAL i_format : unsigned(1 DOWNTO 0);
-  SIGNAL i_ddd  : unsigned(1 DOWNTO 0);
   SIGNAL i_ven,i_sof : std_logic;
   SIGNAL i_wr : std_logic;
   SIGNAL i_divstart,i_divrun : std_logic;
@@ -395,10 +387,8 @@ ARCHITECTURE rtl OF ascal3d IS
   SIGNAL o_format : unsigned(5 DOWNTO 0);
   SIGNAL o_fb_pal_dr : unsigned(23 DOWNTO 0);
   SIGNAL pal_mem : arr_uv24(0 TO 255);
-  SIGNAL o_ddd : unsigned(1 DOWNTO 0);
   SIGNAL o_htotal,o_hsstart,o_hsend : uint12;
   SIGNAL o_hmin,o_hmax,o_hdisp : uint12;
-  SIGNAL o_hmina,o_hminb,o_hmaxa,o_hmaxb,o_hsizep : uint12;
   SIGNAL o_hsize,o_vsize : uint12;
   SIGNAL o_vtotal,o_vsstart,o_vsend : uint12;
   SIGNAL o_vmin,o_vmax,o_vdisp : uint12;
@@ -406,14 +396,14 @@ ARCHITECTURE rtl OF ascal3d IS
   SIGNAL o_iendframe0,o_iendframe02,o_iendframe1,o_iendframe12 : std_logic;
   SIGNAL o_bufup0,o_bufup1,o_inter : std_logic;
   SIGNAL o_ibuf0,o_ibuf1,o_obuf0,o_obuf1 : natural RANGE 0 TO 2;
-  TYPE type_o_state IS (sDISP,sHSYNC,sHSYNC_3D,sREAD,sWAITREAD);
+  TYPE type_o_state IS (sDISP,sHSYNC,sREAD,sWAITREAD);
   SIGNAL o_state : type_o_state;
   SIGNAL o_copy,o_readack,o_readack_sync,o_readack_sync2 : std_logic;
   SIGNAL o_readdataack,o_readdataack_sync,o_readdataack_sync2 : std_logic;
   SIGNAL o_copyv : unsigned(0 TO 8);
   SIGNAL o_adrs : unsigned(31 DOWNTO 0); -- Avalon address
   SIGNAL o_adrs_pre : natural RANGE 0 TO 32*4096-1;
-  SIGNAL o_adrsa,o_rline,o_3dr : std_logic;
+  SIGNAL o_adrsa,o_rline : std_logic;
   SIGNAL o_ad,o_ad1,o_ad2,o_ad3 : natural RANGE 0 TO 2*BLEN-1;
   SIGNAL o_adturn : std_logic;
   SIGNAL o_dr : unsigned(N_DW-1 DOWNTO 0);
@@ -436,7 +426,7 @@ ARCHITECTURE rtl OF ascal3d IS
   SIGNAL o_vfrac,o_hfrac,o_hfrac1,o_hfrac2,o_hfrac3,o_hfrac4 : unsigned(11 DOWNTO 0);
   SIGNAL o_hacc,o_hacc_ini,o_hacc_next,o_vacc,o_vacc_next,o_vacc_ini : natural RANGE 0 TO 4*OHRES-1;
   SIGNAL o_hsv,o_vsv,o_dev,o_pev : unsigned(0 TO 5);
-  SIGNAL o_hsp,o_hsp_3d,o_hsp_3dpre,o_vss : std_logic;
+  SIGNAL o_hsp,o_vss : std_logic;
   SIGNAL o_read,o_read_pre : std_logic;
   SIGNAL o_readlev,o_copylev : natural RANGE 0 TO 2;
   SIGNAL o_hburst,o_hbcpt : natural RANGE 0 TO 31;
@@ -461,7 +451,7 @@ ARCHITECTURE rtl OF ascal3d IS
   SIGNAL o_vdivr : unsigned(24 DOWNTO 0);
   SIGNAL o_divstart : std_logic;
   SIGNAL o_divrun : std_logic;
-  SIGNAL o_hacpt,o_vacpt,o_vacptd : unsigned(11 DOWNTO 0);
+  SIGNAL o_hacpt,o_vacpt : unsigned(11 DOWNTO 0);
   
   -----------------------------------------------------------------------------
   FUNCTION shift_ishift(shift : unsigned(0 TO 119);
@@ -582,7 +572,7 @@ ARCHITECTURE rtl OF ascal3d IS
     END CASE;
     RETURN shift_v;
   END FUNCTION;
-
+  
   FUNCTION shift_onext (acpt   : natural RANGE 0 TO 15;
                         format : unsigned(5 DOWNTO 0)) RETURN boolean IS
   BEGIN
@@ -601,7 +591,7 @@ ARCHITECTURE rtl OF ascal3d IS
                (N_DW=64  AND ((acpt MOD 2)=0));
     END CASE;
   END FUNCTION;
-  
+
   FUNCTION shift_opix (shift  : unsigned(0 TO N_DW+15);
                        format : unsigned(5 DOWNTO 0)) RETURN type_pix IS
   BEGIN
@@ -986,7 +976,6 @@ BEGIN
       i_head(83)<=i_vdown;
       i_head(84)<=i_mode(3);
       i_head(87 DOWNTO 85)<=i_count;
-      i_head(89 DOWNTO 88)<="01"; -- 3D version
       i_head(79 DOWNTO 64)<="0000" & to_unsigned(i_hrsize,12); -- Image width
       i_head(63 DOWNTO 48)<="0000" & to_unsigned(i_vrsize,12); -- Image height
       i_head(47 DOWNTO 32)<=
@@ -1079,7 +1068,7 @@ BEGIN
           i_vmin<=vimin; -- <ASYNC>
           i_vmax<=vimax; -- <ASYNC>
         END IF;
-        
+
         IF i_format="00" OR i_format="11" THEN -- 16bpp
           i_hburst<=(i_hrsize*2 + N_BURST - 1) / N_BURST;
         ELSIF i_format="01" THEN -- 24bpp
@@ -1089,7 +1078,6 @@ BEGIN
         END IF;
         ----------------------------------------------------
         i_mode<=mode; -- <ASYNC>
-        i_ddd <=ddd;  -- <ASYNC>
         i_format<=format; -- <ASYNC>
         
         -- Downscaling : Nearest or bilinear
@@ -1101,24 +1089,18 @@ BEGIN
         ----------------------------------------------------
         i_hsize  <=(4096+i_hmax-i_hmin+1) MOD 4096;
         i_vmaxmin<=(4096+i_vmax-i_vmin+1) MOD 4096;
-        
+                            
         IF i_inter='0' THEN
           -- Non interlaced
           i_vsize<=i_vmaxmin;
           i_half <='0';
-        ELSIF i_ddd="00" THEN
-          IF i_ovsize<2*i_vmaxmin THEN
-            -- Interlaced, but downscaling, use only half frames
-            i_vsize<=i_vmaxmin;
-            i_half <='1';
-          ELSE
-            -- Interlaced : Double image height
-            i_vsize<=2*i_vmaxmin;
-            i_half <='0';
-          END IF;
-        ELSE
-          -- Interlaced 3D mode
+        ELSIF i_ovsize<2*i_vmaxmin THEN
+          -- Interlaced, but downscaling, use only half frames
           i_vsize<=i_vmaxmin;
+          i_half <='1';
+        ELSE
+          -- Interlaced : Double image height
+          i_vsize<=2*i_vmaxmin;
           i_half <='0';
         END IF;
         
@@ -1270,7 +1252,7 @@ BEGIN
         ELSIF i_de_delay<18 THEN
           i_de_delay<=i_de_delay+1;
         END IF;
-        
+       
         IF i_de_delay=16 THEN
           i_lwad<=0;
           i_lrad<=0;
@@ -1491,12 +1473,12 @@ BEGIN
       --------------------------------------------
       avl_o_vs_sync<=o_vsv(0); -- <ASYNC>
       avl_o_vs<=avl_o_vs_sync;
-
+      
       avl_fb_ena<=o_fb_ena; -- <ASYNC>
       IF avl_fb_ena='0' THEN
         IF HEADER THEN
-          avl_o_offset0<=buf_offset(o_obuf0,RAMBASE,RAMSIZE) + N_BURST; -- <ASYNC>
-          avl_o_offset1<=buf_offset(o_obuf1,RAMBASE,RAMSIZE) + N_BURST; -- <ASYNC>
+          avl_o_offset0<=buf_offset(o_obuf0,RAMBASE,RAMSIZE) + N_BURST;  -- <ASYNC>
+          avl_o_offset1<=buf_offset(o_obuf1,RAMBASE,RAMSIZE) + N_BURST;  -- <ASYNC>
         ELSE
           avl_o_offset0<=buf_offset(o_obuf0,RAMBASE,RAMSIZE);  -- <ASYNC>
           avl_o_offset1<=buf_offset(o_obuf1,RAMBASE,RAMSIZE);  -- <ASYNC>
@@ -1585,7 +1567,7 @@ BEGIN
           avl_readdataack<=NOT avl_readdataack;
         END IF;
       END IF;
-      
+
       IF avl_o_vs_sync='0' AND avl_o_vs='1' THEN
         avl_wad<=2*BLEN-1;
       END IF;
@@ -1669,7 +1651,6 @@ BEGIN
       o_readlev<=0;
       o_copylev<=0;
       o_hsp<='0';
-      o_hsp_3d<='0';
       
     ELSIF rising_edge(o_clk) THEN
       ------------------------------------------------------
@@ -1677,7 +1658,6 @@ BEGIN
       o_format <="0001" & format; -- <ASYNC> ?
       
       o_run    <=run; -- <ASYNC> ?
-      o_ddd    <=ddd; -- <ASYNC> ?
       
       o_htotal <=htotal; -- <ASYNC> ?
       o_hsstart<=hsstart; -- <ASYNC> ?
@@ -1685,7 +1665,7 @@ BEGIN
       o_hdisp  <=hdisp; -- <ASYNC> ?
       o_hmin   <=hmin; -- <ASYNC> ?
       o_hmax   <=hmax; -- <ASYNC> ?
-
+      
       o_vtotal <=vtotal; -- <ASYNC> ?
       o_vsstart<=vsstart; -- <ASYNC> ?
       o_vsend  <=vsend; -- <ASYNC> ?
@@ -1693,20 +1673,8 @@ BEGIN
       o_vmin   <=vmin; -- <ASYNC> ?
       o_vmax   <=vmax; -- <ASYNC> ?
       
-      o_hsizep <=o_hmax - o_hmin + 1;
+      o_hsize  <=o_hmax - o_hmin + 1;
       o_vsize  <=o_vmax - o_vmin + 1;
-      
-      IF (o_ddd="01" AND o_inter='1') OR o_ddd="11" THEN
-        o_hsize <=o_hsizep/2;
-        o_hmina <=o_hmin/2;
-        o_hmaxa <=o_hdisp/2 - o_hmin/2 -1;
-        o_hminb <=o_hdisp/2 + o_hmin/2;
-        o_hmaxb <=o_hdisp - o_hmin/2 - 1;
-      ELSE
-        o_hsize <=o_hsizep;
-        o_hmina <=o_hmin;
-        o_hmaxb <=o_hmax;
-      END IF;
       
       --------------------------------------------
       -- Triple buffering.
@@ -1734,7 +1702,6 @@ BEGIN
         o_hdown<=i_hdown; -- <ASYNC>
         o_vdown<=i_vdown; -- <ASYNC>
       END IF;
-      
       -- Framebuffer mode.
       IF o_fb_ena='1' THEN
         o_ihsize<=o_fb_hsize;
@@ -1800,36 +1767,24 @@ BEGIN
           o_bibu<='0';
         END IF;
         o_hsp<='1';
-        o_hsp_3dpre<='1';
-        o_3dr<='0';
-      END IF;
-      
-      IF o_dcpt=o_hsize AND ((o_ddd="01" AND o_inter='1') OR o_ddd="11") THEN
-        o_hsp_3d<=o_hsp_3dpre;
-        o_hsp_3dpre<='0';
-        o_3dr<='1';
       END IF;
       
       o_vpe<=to_std_logic(o_vcpt_pre<o_vmax AND o_vcpt_pre>=o_vmin);
       o_divstart<='0';
       o_adrsa<='0';
-      
+
       o_vacc_ini<=(o_vsize - o_ivsize + 8192) MOD 8192;
       o_hacc_ini<=(o_hsize + o_ihsize + 8192) MOD 8192;
       
       --o_vacc_ini<=o_ivsize;
       --o_hacc_ini<=(2*o_hsize - o_ihsize + 8192) MOD 8192;
-      
+
       CASE o_state IS
           --------------------------------------------------
         WHEN sDISP =>
           IF o_hsp='1' THEN
             o_state<=sHSYNC;
             o_hsp<='0';
-          END IF;
-          IF o_hsp_3d='1' THEN
-            o_state<=sHSYNC_3D;
-            o_hsp_3d<='0';
           END IF;
           
           --------------------------------------------------
@@ -1849,27 +1804,14 @@ BEGIN
             o_vacc     <=o_vacc_ini;
             o_vacc_next<=o_vacc_ini + 2*o_ivsize;
             o_vacpt<=x"001";
-            o_vacptd<=x"001";
             vcarry_v:=false;
           END IF;
 
           IF vcarry_v THEN
-            o_vacpt<=o_vacpt+1; -- RAM pointer
-            o_vacptd<=o_vacptd+1; -- Display position
-          END IF;
-          o_hbcpt<=0; -- Clear burst counter on line
-          IF (o_vpe='1' AND vcarry_v) OR o_fload>0 THEN
-            o_state<=sREAD;
-          ELSE
-            o_state<=sDISP;
-          END IF;
-          
-        WHEN sHSYNC_3D =>
-          IF o_inter='1' THEN
             o_vacpt<=o_vacpt+1;
           END IF;
           o_hbcpt<=0; -- Clear burst counter on line
-          IF o_vpe='1' OR o_fload>0 THEN
+          IF (o_vpe='1' AND vcarry_v) OR o_fload>0 THEN
             o_state<=sREAD;
           ELSE
             o_state<=sDISP;
@@ -1896,8 +1838,7 @@ BEGIN
               o_state<=sREAD;
             ELSE
               o_state<=sDISP;
-              IF o_fload>=1 AND (o_hsp_3dpre='0' OR o_ddd="00"
-                                 OR (o_inter='0' AND o_ddd/="11")) THEN
+              IF o_fload>=1 THEN
                 o_fload<=o_fload-1;
               END IF;
             END IF;
@@ -1909,41 +1850,17 @@ BEGIN
       o_read<=o_read_pre AND o_run;
       
       o_adrs_pre<=to_integer(o_vacpt) * o_hburst;
-      IF o_ddd="00" THEN
-        o_rline<=o_vacpt(0); -- Even/Odd line for interlaced video
-      ELSE
-        o_rline<=o_3dr; -- Left / Right panel on 3D view
-      END IF;
-
+      o_rline<=o_vacpt(0); -- Even/Odd line for interlaced video
       IF o_adrsa='1' THEN
-        IF o_ddd/="00" AND o_inter='1' THEN
-          IF o_fload=2 THEN
-            IF o_hsp_3dpre='1' THEN
-              o_adrs<=to_unsigned(o_hbcpt * N_BURST,32);
-            ELSE
-              o_adrs<=to_unsigned((o_hbcpt + o_hburst) * N_BURST,32);
-            END IF;
-          ELSIF o_fload=1 THEN
-            IF o_hsp_3dpre='1' THEN
-              o_adrs<=to_unsigned((o_hburst * 2 + o_hbcpt) * N_BURST,32);
-            ELSE
-              o_adrs<=to_unsigned((o_hburst * 3 + o_hbcpt) * N_BURST,32);
-            END IF;
-          ELSE
-            o_adrs<=to_unsigned((o_adrs_pre + o_hbcpt) * N_BURST,32);
-            o_alt<=altx(o_vacptd(1 DOWNTO 0) + 1);
-          END IF;
+        IF o_fload=2 THEN
+          o_adrs<=to_unsigned(o_hbcpt * N_BURST,32);
+          o_alt<="1111";
+        ELSIF o_fload=1 THEN
+          o_adrs<=to_unsigned((o_hburst + o_hbcpt) * N_BURST,32);
+          o_alt<="0100";
         ELSE
-          IF o_fload=2 THEN
-            o_adrs<=to_unsigned(o_hbcpt * N_BURST,32);
-            o_alt<="1111";
-          ELSIF o_fload=1 THEN
-            o_adrs<=to_unsigned((o_hbcpt + o_hburst) * N_BURST,32);
-            o_alt<="0100";
-          ELSE
-            o_adrs<=to_unsigned((o_adrs_pre + o_hbcpt) * N_BURST,32);
-            o_alt<=altx(o_vacptd(1 DOWNTO 0) + 1);
-          END IF;
+          o_adrs<=to_unsigned((o_adrs_pre + o_hbcpt) * N_BURST,32);
+          o_alt<=altx(o_vacpt(1 DOWNTO 0) + 1);
         END IF;
       END IF;
       
@@ -1963,11 +1880,7 @@ BEGIN
           o_hacc     <=o_hacc_ini;
           o_hacc_next<=o_hacc_ini + 2*o_ihsize;
           o_hacpt    <=x"000";
-          IF o_ddd="00" OR o_rline='0' THEN
-            o_dcpt<=0;
-          ELSE
-            o_dcpt<=o_hsize;
-          END IF;
+          o_dcpt<=0;
           o_dshi<=2;
           o_acpt<=0;
           o_first<='1';
@@ -1979,6 +1892,7 @@ BEGIN
         ELSE
           o_ad<=BLEN;
         END IF;
+        
       ELSE
         -- dshi : Force shift first two or three pixels of each line
         IF o_dshi=0  THEN
@@ -2231,7 +2145,7 @@ BEGIN
       o_copyv(1 TO 8)<=o_copyv(0 TO 7);
       
       o_dcptv(1)<=o_dcpt;
-      IF o_dcptv(1)>o_hsizep THEN
+      IF o_dcptv(1)>o_hsize THEN
         o_copyv(2)<='0';
       END IF;
       o_dcptv(2)<=o_dcptv(1) MOD OHRES;
@@ -2363,12 +2277,8 @@ BEGIN
         END IF;
         
         o_dev(0)<=to_std_logic(o_hcpt<o_hdisp AND o_vcpt<o_vdisp);
-        o_pev(0)<=to_std_logic(o_hcpt>=o_hmina AND o_hcpt<=o_hmaxb AND
+        o_pev(0)<=to_std_logic(o_hcpt>=o_hmin AND o_hcpt<=o_hmax AND
                                o_vcpt>=o_vmin AND o_vcpt<=o_vmax);
-        IF ((o_ddd="01" AND o_inter='1') OR o_ddd="11") AND
-          o_hcpt>o_hmaxa AND o_hcpt<o_hminb THEN
-          o_pev(0)<='0';
-        END IF;
         o_hsv(0)<=to_std_logic(o_hcpt>=o_hsstart AND o_hcpt<o_hsend);
         o_vsv(0)<=to_std_logic((o_vcpt=o_vsstart AND o_hcpt>=o_hsstart) OR
                                (o_vcpt>o_vsstart AND o_vcpt<o_vsend) OR
@@ -2401,19 +2311,11 @@ BEGIN
       IF o_ce='1' THEN
         -- CYCLE 1 -----------------------------------------
         -- Read mem
-        IF (o_ddd="01" AND o_inter='1') OR o_ddd="11" THEN
-          IF o_hcpt<=o_hmaxa THEN
-            o_radl<=(o_hcpt - o_hmina + OHRES) MOD OHRES;
-          ELSE
-            o_radl<=(o_hcpt - o_hminb + o_hsize + OHRES) MOD OHRES;
-          END IF;
-        ELSE
-          o_radl<=(o_hcpt - o_hmina + OHRES) MOD OHRES;
-        END IF;
+        o_radl<=(o_hcpt-o_hmin+OHRES) MOD OHRES;
         
         -- CYCLE 2 -----------------------------------------
         -- Lines reordering
-        CASE o_vacptd(1 DOWNTO 0) IS
+        CASE o_vacpt(1 DOWNTO 0) IS
           WHEN "10"   => pixq_v:=(o_ldr0,o_ldr1,o_ldr2,o_ldr3);
           WHEN "11"   => pixq_v:=(o_ldr1,o_ldr2,o_ldr3,o_ldr0);
           WHEN "00"   => pixq_v:=(o_ldr2,o_ldr3,o_ldr0,o_ldr1);
@@ -2423,10 +2325,10 @@ BEGIN
         o_vpixq<=pixq_v;
         
         -- Bottom edge : replicate last line
-        IF to_integer(o_vacptd)=o_ivsize THEN
+        IF to_integer(o_vacpt)=o_ivsize THEN
           o_vpixq(2)<=pixq_v(2);
         END IF;
-        IF to_integer(o_vacptd)>=o_ivsize+1 THEN
+        IF to_integer(o_vacpt)>=o_ivsize+1 THEN
           o_vpixq(2)<=pixq_v(1);
           o_vpixq(1)<=pixq_v(1);
         END IF;

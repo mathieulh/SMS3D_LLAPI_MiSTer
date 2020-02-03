@@ -55,7 +55,6 @@ entity system is
 		pal:				in STD_LOGIC;
 		region:			in	STD_LOGIC;
 		mapper_lock:	in STD_LOGIC;
-		sscope:        out STD_LOGIC;
 
 		audioL:		out STD_LOGIC_VECTOR(15 downto 0);
 		audioR:		out STD_LOGIC_VECTOR(15 downto 0);
@@ -461,9 +460,6 @@ begin
 				if WR_n='1' and MREQ_n='0' then
 					last_read_addr <= A; -- gyurco anti-ldir patch
 				end if;
-				if WR_n='0' and A(15 downto 2)="11111111111110" then
-					sscope<=D_in(0);
-            end if;
 				if mapper_msx = '1' then
 					if WR_n='0' and A(15 downto 2)="00000000000000" then
 						case A(1 downto 0) is
