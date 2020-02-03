@@ -509,16 +509,18 @@ wire [127:0] vbuf_writedata;
 wire  [15:0] vbuf_byteenable;
 wire         vbuf_write;
 
+
 wire  [23:0] hdmi_data;
 wire         hdmi_vs, hdmi_hs, hdmi_de;
 
-ascal 
+ascal3d
+
 #(
 	.RAMBASE(32'h20000000),
 	.N_DW(128),
 	.N_AW(28)
 )
-ascal
+ascal3d
 (
 	.reset_na (~reset_req),
 	.run      (1),
@@ -562,6 +564,7 @@ ascal
 	.vmax     (vmax),
 
 	.mode     ({~lowlat,FB_EN ? FB_FLT : |scaler_flt,2'b00}),
+	.ddd      (ddd),
 	.poly_clk (clk_sys),
 	.poly_a   (coef_addr),
 	.poly_dw  (coef_data),
@@ -590,6 +593,8 @@ ascal
 	.avl_byteenable   (vbuf_byteenable)
 );
 
+wire [1:0] ddd;
+wire       shrink;
 reg        FB_EN     = 0;
 reg        FB_FLT    = 0;
 reg  [5:0] FB_FMT    = 0;
@@ -644,6 +649,12 @@ always @(posedge clk_vid) begin
 				hmax <= ((WIDTH  - videow)>>1) + videow - 1'd1;
 				vmin <= ((HEIGHT - videoh)>>1);
 				vmax <= ((HEIGHT - videoh)>>1) + videoh - 1'd1;
+				if (shrink) begin
+					hmin <= ((WIDTH  - (videow>>1))>>1);
+					hmax <= ((WIDTH  - (videow>>1))>>1) + (videow>>1) - 1'd1;
+					vmin <= ((HEIGHT - (videoh>>1))>>1);
+					vmax <= ((HEIGHT - (videoh>>1))>>1) + (videoh>>1) - 1'd1;
+				end
 			end
 	endcase
 end
@@ -1130,6 +1141,8 @@ emu emu
 
 	.VIDEO_ARX(ARX),
 	.VIDEO_ARY(ARY),
+	.DDD(ddd),
+	.SHRINK(shrink),
 
 	.AUDIO_L(audio_ls),
 	.AUDIO_R(audio_rs),
