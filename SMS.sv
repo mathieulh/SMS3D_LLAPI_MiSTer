@@ -139,6 +139,7 @@ localparam SP64     = 1'b0;
 `endif
 
 assign ADC_BUS  = 'Z;
+assign USER_OUT = '1;
 assign VGA_F1 = ~sscope;
 
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
