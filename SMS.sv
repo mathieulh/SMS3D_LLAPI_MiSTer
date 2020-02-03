@@ -41,10 +41,6 @@ module emu
 	//Video aspect ratio for HDMI. Most retro systems have ratio 4:3.
 	output  [7:0] VIDEO_ARX,
 	output  [7:0] VIDEO_ARY,
-	
-	//3D mode
-	output  [1:0] DDD,
-	output        SHRINK,
 
 	output  [7:0] VGA_R,
 	output  [7:0] VGA_G,
@@ -63,6 +59,11 @@ module emu
 	output  [1:0] LED_POWER,
 	output  [1:0] LED_DISK,
 
+	// I/O board button press simulation (active high)
+	// b[1]: user button
+	// b[0]: osd button
+	output  [1:0] BUTTONS,
+
 	output [15:0] AUDIO_L,
 	output [15:0] AUDIO_R,
 	output        AUDIO_S, // 1 - signed audio samples, 0 - unsigned
@@ -71,7 +72,7 @@ module emu
 	//ADC
 	inout   [3:0] ADC_BUS,
 
-	// SD-SPI
+	//SD-SPI
 	output        SD_SCK,
 	output        SD_MOSI,
 	input         SD_MISO,
@@ -114,10 +115,10 @@ module emu
 	// Open-drain User port.
 	// 0 - D+/RX
 	// 1 - D-/TX
-	// 2..5 - USR1..USR4
+	// 2..6 - USR2..USR6
 	// Set USER_OUT to 1 to read from USER_IN.
-	input   [5:0] USER_IN,
-	output  [5:0] USER_OUT,
+	input   [6:0] USER_IN,
+	output  [6:0] USER_OUT,
 
 	input         OSD_STATUS
 );
@@ -133,8 +134,7 @@ localparam SP64     = 1'b0;
 `endif
 
 assign ADC_BUS  = 'Z;
-assign USER_OUT = '1;
-assign VGA_F1 = ~sscope;
+assign VGA_F1 = 0;
 
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 
@@ -144,12 +144,10 @@ assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DD
 assign LED_USER  = cart_download | bk_state | (status[23] & bk_pending);
 assign LED_DISK  = 0 ;
 assign LED_POWER = 0 ;
+assign BUTTONS   = llapi_osd;
 
 assign VIDEO_ARX = status[9] ? 8'd16 : 8'd4;
 assign VIDEO_ARY = status[9] ? 8'd9  : 8'd3;
-
-assign DDD = {status[17] & status[16],status[17] | status[16]};
-assign SHRINK = status[18];
 
 `include "build_id.v"
 parameter CONF_STR = {
@@ -169,8 +167,6 @@ parameter CONF_STR = {
 	"O35,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	"O2,TV System,NTSC,PAL;",
 	"OD,Border,No,Yes;",
-	"OGH,3D side by side,No,Autodetect,Always;",
-	"OI,3D shrink,No,Yes;",
 `ifdef USE_SP64
 	"O8,Sprites per line,Std(8),All(64);",
 `endif
@@ -181,6 +177,8 @@ parameter CONF_STR = {
 	"OE,Multitap,Disabled,Port1;",
 	"OB,BIOS,Enable,Disable;",
 	"OF,Disable mapper,No,Yes;",
+	"-;",
+	"OG,Serial Mode,OFF,LLAPI;",
 	"-;",
 	"R0,Reset;",
 	"J1,Fire 1,Fire 2,Pause;",
@@ -399,8 +397,6 @@ wire        nvram_we;
 wire  [7:0] nvram_d;
 wire  [7:0] nvram_q;
 
-wire sscope;
-
 system #(MAX_SPPL) system
 (
 	.clk_sys(clk_sys),
@@ -447,7 +443,6 @@ system #(MAX_SPPL) system
 	.pal(pal),
 	.region(status[10]),
 	.mapper_lock(status[15]),
-	.sscope(sscope),
 
 	.fm_ena(~status[12]),
 	.audioL(audio_l),
@@ -467,8 +462,8 @@ system #(MAX_SPPL) system
 	.nvram_q(nvram_q)
 );
 
-assign joy[0] = status[1] ? joy_1 : joy_0;
-assign joy[1] = status[1] ? joy_0 : joy_1;
+assign joy[0] = status[1] ? joy_b : joy_a;
+assign joy[1] = status[1] ? joy_a : joy_b;
 
 wire [6:0] joya = ~joy[jcnt];
 wire [6:0] joyb = status[14] ? 7'h7F : ~joy[1];
@@ -492,6 +487,112 @@ always @(posedge clk_sys) begin
 	end
 
 	if(reset | ~status[14]) jcnt <= 0;
+end
+
+
+//////////////////   LLAPI   ///////////////////
+
+wire [31:0] llapi_buttons, llapi_buttons2;
+wire [71:0] llapi_analog, llapi_analog2;
+wire [7:0]  llapi_type, llapi_type2;
+wire llapi_en, llapi_en2;
+
+wire llapi_select = status[16];
+
+wire llapi_latch_o, llapi_latch_o2, llapi_data_o, llapi_data_o2;
+
+always_comb begin
+	USER_OUT = 6'b111111;
+	if (llapi_select) begin
+		USER_OUT[0] = llapi_latch_o;
+		USER_OUT[1] = llapi_data_o;
+		USER_OUT[2] = ~(llapi_select & ~OSD_STATUS);
+		USER_OUT[4] = llapi_latch_o2;
+		USER_OUT[5] = llapi_data_o2;
+	end
+end
+
+LLAPI llapi
+(
+	.CLK_50M(CLK_50M),
+	.LLAPI_SYNC(VBlank),
+	.IO_LATCH_IN(USER_IN[0]),
+	.IO_LATCH_OUT(llapi_latch_o),
+	.IO_DATA_IN(USER_IN[1]),
+	.IO_DATA_OUT(llapi_data_o),
+	.ENABLE(llapi_select & ~OSD_STATUS),
+	.LLAPI_BUTTONS(llapi_buttons),
+	.LLAPI_ANALOG(llapi_analog),
+	.LLAPI_TYPE(llapi_type),
+	.LLAPI_EN(llapi_en)
+);
+
+LLAPI llapi2
+(
+	.CLK_50M(CLK_50M),
+	.LLAPI_SYNC(VBlank),
+	.IO_LATCH_IN(USER_IN[4]),
+	.IO_LATCH_OUT(llapi_latch_o2),
+	.IO_DATA_IN(USER_IN[5]),
+	.IO_DATA_OUT(llapi_data_o2),
+	.ENABLE(llapi_select & ~OSD_STATUS),
+	.LLAPI_BUTTONS(llapi_buttons2),
+	.LLAPI_ANALOG(llapi_analog2),
+	.LLAPI_TYPE(llapi_type2),
+	.LLAPI_EN(llapi_en2)
+);
+
+reg llapi_button_pressed, llapi_button_pressed2;
+
+always @(posedge clk_sys) begin
+        if (reset) begin
+                llapi_button_pressed  <= 0;
+                llapi_button_pressed2 <= 0;
+        end else if (|llapi_buttons)
+                llapi_button_pressed  <= 1;
+        else if (|llapi_buttons2)
+                llapi_button_pressed2 <= 1;
+end
+
+// controller id is 0 if there is either an Atari controller or no controller
+// if id is 0, assume there is no controller until a button is pressed
+wire use_llapi = llapi_en && llapi_select && (|llapi_type || llapi_button_pressed);
+wire use_llapi2 = llapi_en2 && llapi_select && (|llapi_type2 || llapi_button_pressed2);
+
+// Indexes:
+// 0 = D+    = P1 Latch
+// 1 = D-    = P1 Data
+// 2 = TX-   = LLAPI Enable
+// 3 = GND_d = N/C
+// 4 = RX+   = P2 Latch
+// 5 = RX-   = P2 Data
+
+wire [6:0] joy_ll_a = {
+	llapi_buttons[5], llapi_buttons[1], llapi_buttons[0],
+	llapi_buttons[27], llapi_buttons[26], llapi_buttons[25], llapi_buttons[24] // dpad
+};
+
+wire [6:0] joy_ll_b = {
+	llapi_buttons2[5], llapi_buttons2[1], llapi_buttons2[0],
+	llapi_buttons2[27], llapi_buttons2[26], llapi_buttons2[25], llapi_buttons2[24] // dpad
+};
+
+wire llapi_osd = (llapi_buttons[26] & llapi_buttons[5] & llapi_buttons[0]) || (llapi_buttons2[26] & llapi_buttons2[5] & llapi_buttons2[0]);
+
+wire [6:0] joy_a;
+wire [6:0] joy_b;
+// if LLAPI is enabled, shift USB controllers to next available player slot
+always_comb begin
+        if (use_llapi & use_llapi2) begin
+                joy_a = joy_ll_a;
+                joy_b = joy_ll_b;
+        end else if (use_llapi ^ use_llapi2) begin
+                joy_a = use_llapi  ? joy_ll_a : joy_0;
+                joy_b = use_llapi2 ? joy_ll_b : joy_0;
+        end else begin
+                joy_a = joy_0;
+                joy_b = joy_1;
+        end
 end
 
 spram #(.widthad_a(13)) ram_inst
@@ -531,8 +632,8 @@ video video
 	.smode_M3(smode_M3),
 	.x(x),
 	.y(y),
-	.hsync(HSync),
-	.vsync(VSync),
+	.hsync(HS),
+	.vsync(VS),
 	.hblank(HBlank),
 	.vblank(VBlank)
 );
@@ -570,7 +671,8 @@ always @(negedge clk_sys) begin
 	end
 end
 
-wire HSync, VSync;
+wire HS, VS;
+reg  HSync, VSync;
 wire HBlank, VBlank;
 
 wire [2:0] scale = status[5:3];
@@ -578,6 +680,11 @@ wire [2:0] sl = scale ? scale - 1'd1 : 3'd0;
 
 assign CLK_VIDEO = clk_sys;
 assign VGA_SL = sl[1:0];
+
+always @(posedge CLK_VIDEO) begin
+	HSync <= HS;
+	if(~HSync & HS) VSync <= VS;
+end
 
 video_mixer #(.HALF_DEPTH(1), .LINE_LENGTH(300)) video_mixer
 (
