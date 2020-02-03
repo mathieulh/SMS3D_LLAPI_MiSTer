@@ -42,11 +42,6 @@ module emu
 	output  [7:0] VIDEO_ARX,
 	output  [7:0] VIDEO_ARY,
 
-	
-	//3D mode
-	output  [1:0] DDD,
-	output        SHRINK,
-
 	output  [7:0] VGA_R,
 	output  [7:0] VGA_G,
 	output  [7:0] VGA_B,
@@ -139,8 +134,7 @@ localparam SP64     = 1'b0;
 `endif
 
 assign ADC_BUS  = 'Z;
-assign USER_OUT = '1;
-assign VGA_F1 = ~sscope;
+assign VGA_F1 = 0;
 
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 
@@ -154,9 +148,6 @@ assign BUTTONS   = llapi_osd;
 
 assign VIDEO_ARX = status[9] ? 8'd16 : 8'd4;
 assign VIDEO_ARY = status[9] ? 8'd9  : 8'd3;
-
-assign DDD = {status[17] & status[16],status[17] | status[16]};
-assign SHRINK = status[18];
 
 `include "build_id.v"
 parameter CONF_STR = {
@@ -176,8 +167,6 @@ parameter CONF_STR = {
 	"O35,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	"O2,TV System,NTSC,PAL;",
 	"OD,Border,No,Yes;",
-	"OGH,3D side by side,No,Autodetect,Always;",
-	"OI,3D shrink,No,Yes;",
 `ifdef USE_SP64
 	"O8,Sprites per line,Std(8),All(64);",
 `endif
@@ -408,8 +397,6 @@ wire        nvram_we;
 wire  [7:0] nvram_d;
 wire  [7:0] nvram_q;
 
-wire sscope;
-
 system #(MAX_SPPL) system
 (
 	.clk_sys(clk_sys),
@@ -456,7 +443,6 @@ system #(MAX_SPPL) system
 	.pal(pal),
 	.region(status[10]),
 	.mapper_lock(status[15]),
-	.sscope(sscope),
 
 	.fm_ena(~status[12]),
 	.audioL(audio_l),
