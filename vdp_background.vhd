@@ -92,7 +92,7 @@ begin
 						-- Since there seems to be no difference between the Japanese version of Ys and the US one, there is no reasonable need
 						-- to implement a way to select the code below manually or automatically.
 
-						char_address(9) := -- table_address(10) and 
+						char_address(9) := table_address(10) and 
 													y(7) ;
 						char_address(8 downto 5)	:= y(6 downto 3);						
 					end if;
